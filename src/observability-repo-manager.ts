@@ -2,6 +2,7 @@ import type { GitlabProjectApi } from '@cpn-console/gitlab-plugin/types/class.js
 import type { Project } from '@cpn-console/hooks'
 import type { Gitlab as IGitlab, ProjectSchema } from '@gitbeaker/core'
 import { removeTrailingSlash, requiredEnv } from '@cpn-console/shared'
+import { GitbeakerRequestError } from '@gitbeaker/requester-utils'
 import { Gitlab } from '@gitbeaker/rest'
 import yaml from 'js-yaml'
 
@@ -77,28 +78,24 @@ export class ObservabilityRepoManager {
   }
 
   private async findOrCreateRepo(): Promise<ProjectSchema> {
-    try {
-      // Find or create parent Gitlab group
-      const groups = await this.gitlabApi.Groups.search(groupName)
-      let group = groups.find(g => g.full_path === groupName || g.name === groupName)
-      if (!group) {
-        group = await this.gitlabApi.Groups.create(groupName, groupName)
-      }
-      // Find or create parent Gitlab repository
-      const projects: ProjectSchema[] = await this.gitlabApi.Groups.allProjects(group.id)
-      const repo = projects.find(p => p.name === repoName)
-      if (!repo) {
-        return this.gitlabApi.Projects.create({
-          name: repoName,
-          path: repoName,
-          namespaceId: group.id,
-          description: 'Repo for Observatorium values, managed by DSO console',
-        })
-      }
-      return repo
-    } catch (error) {
-      throw new Error(`Unexpected error: ${error}`)
+    // Find or create parent Gitlab group
+    const groups = await this.gitlabApi.Groups.search(groupName)
+    let group = groups.find(g => g.full_path === groupName || g.name === groupName)
+    if (!group) {
+      group = await this.gitlabApi.Groups.create(groupName, groupName)
     }
+    // Find or create parent Gitlab repository
+    const projects: ProjectSchema[] = await this.gitlabApi.Groups.allProjects(group.id)
+    const repo = projects.find(p => p.name === repoName)
+    if (!repo) {
+      return this.gitlabApi.Projects.create({
+        name: repoName,
+        path: repoName,
+        namespaceId: group.id,
+        description: 'Repo for Observatorium values, managed by DSO console',
+      })
+    }
+    return repo
   }
 
   // Fonction pour récupérer le fichier values.yaml
@@ -108,24 +105,21 @@ export class ObservabilityRepoManager {
       const file = await this.gitlabApi.RepositoryFiles.show(project.id, valuesPath, valuesBranch)
       return yaml.load(Buffer.from(file.content, 'base64').toString('utf-8')) as ObservabilityData
     } catch (error) {
-      console.log(error)
-      return null
+      if (error instanceof GitbeakerRequestError && error.cause?.response.status === 404) {
+        return null
+      }
+      throw error
     }
   }
 
   private writeYamlFile(data: object): string {
-    try {
-      return yaml.dump(data, {
-        styles: {
-          '!!seq': 'flow',
-        },
-        sortKeys: false,
-        lineWidth: -1, // Pour éviter le retour à la ligne automatique
-      })
-    } catch (e) {
-      console.error(e)
-      return ''
-    }
+    return yaml.dump(data, {
+      styles: {
+        '!!seq': 'flow',
+      },
+      sortKeys: false,
+      lineWidth: -1, // Pour éviter le retour à la ligne automatique
+    })
   }
 
   // Fonction pour éditer, committer et pousser un fichier YAML
@@ -137,13 +131,15 @@ export class ObservabilityRepoManager {
       // Si le fichier existe, mise à jour
       await this.gitlabApi.RepositoryFiles.edit(project.id, filePath, branch, encodedContent, commitMessage)
       console.log(`Fichier YAML commité et poussé: ${filePath}`)
-    } catch (error: any) {
-      console.log('Le fichier n\'existe pas')
-      // Si le fichier n'existe pas, création
-      console.log(`error : ${JSON.stringify(error)}`)
-      console.log(error)
-      await this.gitlabApi.RepositoryFiles.create(project.id, filePath, branch, encodedContent, commitMessage)
-      console.log(`Fichier YAML créé et poussé: ${filePath}`)
+    } catch (error) {
+      if (error instanceof GitbeakerRequestError && error.cause?.response.status === 404) {
+        console.log('Le fichier n\'existe pas')
+        // Si le fichier n'existe pas, création
+        await this.gitlabApi.RepositoryFiles.create(project.id, filePath, branch, encodedContent, commitMessage)
+        console.log(`Fichier YAML créé et poussé: ${filePath}`)
+        return
+      }
+      throw error
     }
   }
 
