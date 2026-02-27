@@ -106,9 +106,6 @@ export const upsertProject: StepCall<Project> = async (payload) => {
     }
 
     for (const environment of payload.args.environments) {
-      if (!environment.apis.kubernetes) {
-        throw new Error(`no kubernetes apis on environment ${environment.name}`)
-      }
       const env: EnvType = environment.stage === 'prod' ? 'prod' : 'hprod'
       projectValue.envs[env].tenants[`${env}-${tenantId}`] = {}
     }
