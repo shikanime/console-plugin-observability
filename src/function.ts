@@ -2,7 +2,7 @@ import type { GitlabProjectApi } from '@cpn-console/gitlab-plugin/types/class.js
 import type { Environment, PluginResult, Project, StepCall, UserObject } from '@cpn-console/hooks'
 import type { KeycloakProjectApi } from '@cpn-console/keycloak-plugin/types/class.js'
 import { okStatus, parseError, specificallyDisabled } from '@cpn-console/hooks'
-import { compressUUID } from '@cpn-console/shared'
+import { compressUUID, generateNamespaceName } from '@cpn-console/shared'
 import { deleteKeycloakGroup, ensureKeycloakGroups } from './keycloak.js'
 import { type EnvType, type ObservabilityProject, ObservabilityRepoManager, observabilityRepository } from './observability-repo-manager.js'
 
@@ -111,10 +111,7 @@ export const upsertProject: StepCall<Project> = async (payload) => {
     }
 
     for (const environment of payload.args.environments) {
-      if (!environment.apis.kubernetes) {
-        throw new Error(`no kubernetes apis on environment ${environment.name}`)
-      }
-      const namespace = await environment.apis.kubernetes.getNsName()
+      const namespace = generateNamespaceName(project.id, environment.id)
       const name = isNewNsName(namespace) ? compressedUUID : project.slug
       console.log({ namespace, name })
       const env: EnvType = environment.stage === 'prod' ? 'prod' : 'hprod'
