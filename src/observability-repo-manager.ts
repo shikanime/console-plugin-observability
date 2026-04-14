@@ -1,10 +1,13 @@
 import type { GitlabProjectApi } from '@cpn-console/gitlab-plugin/types/class.js'
 import type { Project } from '@cpn-console/hooks'
 import type { Gitlab as IGitlab, ProjectSchema } from '@gitbeaker/core'
+import { logger as baseLogger } from '@cpn-console/logger'
 import { removeTrailingSlash, requiredEnv } from '@cpn-console/shared'
 import { GitbeakerRequestError } from '@gitbeaker/requester-utils'
 import { Gitlab } from '@gitbeaker/rest'
 import yaml, { YAMLException } from 'js-yaml'
+
+const logger = baseLogger.child({ plugin: 'observability', module: 'repo-manager' })
 
 const valuesPath = 'helm/values.yaml'
 const valuesBranch = 'main'
@@ -71,7 +74,6 @@ export class ObservabilityRepoManager {
   private gitlabProjectApi: GitlabProjectApi
 
   constructor(gitlabProjectApi: GitlabProjectApi) {
-    console.log(`[OBSERVABILITY] Creating ObservabilityRepoManager`)
     const gitlabUrl = removeTrailingSlash(requiredEnv('GITLAB_INTERNAL_URL'))
     const gitlabToken = requiredEnv('GITLAB_TOKEN')
     this.gitlabApi = new Gitlab({ token: gitlabToken, host: gitlabUrl })
@@ -79,19 +81,20 @@ export class ObservabilityRepoManager {
   }
 
   private async findOrCreateRepo(): Promise<ProjectSchema> {
-    console.log('[OBSERVABILITY] findOrCreateRepo')
     // Find or create parent Gitlab group
+    logger.debug({ action: 'findOrCreateRepo', groupName }, 'Searching gitlab group')
     const groups = await this.gitlabApi.Groups.search(groupName)
     let group = groups.find(g => g.full_path === groupName || g.name === groupName)
     if (!group) {
+      logger.info({ action: 'findOrCreateRepo', groupName }, 'Creating gitlab group')
       group = await this.gitlabApi.Groups.create(groupName, groupName)
     }
     // Find or create parent Gitlab repository
-    console.log('[OBSERVABILITY] Find or create parent Gitlab repository')
+    logger.debug({ action: 'findOrCreateRepo', groupId: group.id, groupName }, 'Searching gitlab repository')
     const projects: ProjectSchema[] = await this.gitlabApi.Groups.allProjects(group.id)
     const repo = projects.find(p => p.name === repoName)
     if (!repo) {
-      console.log(`[OBSERVABILITY] Create GitLab project ${repoName}`)
+      logger.info({ action: 'findOrCreateRepo', groupId: group.id, groupName, repoName }, 'Creating gitlab repository')
       return this.gitlabApi.Projects.create({
         name: repoName,
         path: repoName,
@@ -99,26 +102,28 @@ export class ObservabilityRepoManager {
         description: 'Repo for Observatorium values, managed by DSO console',
       })
     }
+    logger.debug({ action: 'findOrCreateRepo', groupId: group.id, groupName, repoId: repo.id, repoName }, 'Repository found')
     return repo
   }
 
   // Fonction pour récupérer le fichier values.yaml
   private async getValuesFile(project: ProjectSchema): Promise<ObservabilityData | null> {
-    console.log(`[OBSERVABILITY] Retrieve values.yaml`)
     try {
       // Essayer de récupérer le fichier
       const file = await this.gitlabApi.RepositoryFiles.show(project.id, valuesPath, valuesBranch)
+      logger.debug({ action: 'getValuesFile', projectId: project.id, filePath: valuesPath, branch: valuesBranch }, 'Loaded values file')
       return yaml.load(Buffer.from(file.content, 'base64').toString('utf-8')) as ObservabilityData
     } catch (error) {
       if (error instanceof GitbeakerRequestError && error.cause?.response.status === 404) {
+        logger.info({ action: 'getValuesFile', projectId: project.id, filePath: valuesPath, branch: valuesBranch }, 'Values file not found')
         return null
       }
+      logger.error({ action: 'getValuesFile', projectId: project.id, filePath: valuesPath, branch: valuesBranch, err: error }, 'Failed to load values file')
       throw error
     }
   }
 
   private writeYamlFile(data: object): string {
-    console.log(`[OBSERVABILITY] writeYamlFile`)
     try {
       return yaml.dump(data, {
         styles: {
@@ -129,7 +134,7 @@ export class ObservabilityRepoManager {
       })
     } catch (error) {
       if (error instanceof YAMLException) {
-        console.error('Erreur lors de la serialisation YAML:', error.message)
+        logger.error({ action: 'writeYamlFile', err: error }, 'Erreur lors de la serialisation YAML')
         return ''
       }
       throw error
@@ -138,29 +143,29 @@ export class ObservabilityRepoManager {
 
   // Fonction pour éditer, committer et pousser un fichier YAML
   public async commitAndPushYamlFile(project: ProjectSchema, filePath: string, branch: string, commitMessage: string, yamlString: string): Promise<void> {
-    console.log(`[OBSERVABILITY] commitAndPushYamlFile`)
     const encodedContent = Buffer.from(yamlString).toString('utf-8')
     try {
       // Vérifier si le fichier existe déjà
       await this.gitlabApi.RepositoryFiles.show(project.id, filePath, branch)
       // Si le fichier existe, mise à jour
       await this.gitlabApi.RepositoryFiles.edit(project.id, filePath, branch, encodedContent, commitMessage)
-      console.log(`Fichier YAML commité et poussé: ${filePath}`)
+      logger.info({ action: 'commitAndPushYamlFile', projectId: project.id, filePath, branch }, 'Fichier YAML commité et poussé')
     } catch (error) {
       if (error instanceof GitbeakerRequestError && error.cause?.response.status === 404) {
-        console.log('Le fichier n\'existe pas')
+        logger.info({ action: 'commitAndPushYamlFile', projectId: project.id, filePath, branch }, 'Le fichier n\'existe pas')
         // Si le fichier n'existe pas, création
         await this.gitlabApi.RepositoryFiles.create(project.id, filePath, branch, encodedContent, commitMessage)
-        console.log(`Fichier YAML créé et poussé: ${filePath}`)
+        logger.info({ action: 'commitAndPushYamlFile', projectId: project.id, filePath, branch }, 'Fichier YAML créé et poussé')
         return
       }
+      logger.error({ action: 'commitAndPushYamlFile', projectId: project.id, filePath, branch, err: error }, 'Failed to commit values file')
       throw error
     }
   }
 
   public async updateProjectConfig(project: Project, projectValue: ObservabilityProject): Promise<string> {
-    console.log(`[OBSERVABILITY] updateProjectConfig`)
     // Repository created during 'pre' step if needed
+    logger.info({ action: 'updateProjectConfig', projectId: project.id, projectSlug: project.slug }, 'Starting gitlab observability sync')
     const projectId = await this.gitlabProjectApi.getProjectId(observabilityRepository)
     const observabilityProjectRepository = await this.gitlabProjectApi.getProjectById(projectId)
 
@@ -175,6 +180,14 @@ export class ObservabilityRepoManager {
       observabilityTemplateContent,
       'templates/includes.yaml',
     )
+    logger.debug({
+      action: 'updateProjectConfig',
+      projectId: project.id,
+      projectSlug: project.slug,
+      chartUpdated,
+      templateUpdated,
+      repository: observabilityRepository,
+    }, 'Ensured chart files')
 
     // Dépôt d'infra scruté par ArgoCD (charts dso-grafana et dso-observatorium)
     const gitlabRepo = await this.findOrCreateRepo()
@@ -187,6 +200,7 @@ export class ObservabilityRepoManager {
 
     if (!chartUpdated && !templateUpdated
       && JSON.stringify(projects[project.id]) === JSON.stringify(projectValue)) {
+      logger.info({ action: 'updateProjectConfig', projectId: project.id, projectSlug: project.slug }, 'Already up-to-date')
       return 'Already up-to-date'
     }
 
@@ -207,11 +221,12 @@ export class ObservabilityRepoManager {
       `Update project ${project.slug}`,
       yamlString,
     )
+    logger.info({ action: 'updateProjectConfig', projectId: project.id, projectSlug: project.slug, valuesRepoId: gitlabRepo.id }, 'Values synced')
     return `Update: ${project.slug}`
   }
 
   public async deleteProjectConfig(project: Project) {
-    console.log(`[OBSERVABILITY] deleteProjectConfig`)
+    logger.info({ action: 'deleteProjectConfig', projectId: project.id, projectSlug: project.slug }, 'Starting values deletion')
     // Même logique de groupe et de repo que pour l'upsert
     const gitlabRepo = await this.findOrCreateRepo()
 
@@ -220,6 +235,7 @@ export class ObservabilityRepoManager {
 
     // Rechercher le projet à supprimer
     if (!yamlFile || (yamlFile.global?.projects && !(project.id in yamlFile.global.projects))) {
+      logger.info({ action: 'deleteProjectConfig', projectId: project.id, projectSlug: project.slug }, 'No values to delete')
       return
     }
 

@@ -1,5 +1,4 @@
 import { removeTrailingSlash, requiredEnv } from '@cpn-console/shared'
-import { GitbeakerRequestError } from '@gitbeaker/requester-utils'
 
 const config: {
   grafanaUrl?: string
@@ -31,17 +30,4 @@ export function getConfig(): Required<typeof config> {
   config.keycloakUser = config.keycloakUser ?? requiredEnv('KEYCLOAK_ADMIN')
   // @ts-ignore
   return config
-}
-
-export function sanitizeCause(error: unknown) {
-  // Replace GitbeakerRequestError to avoid leaking the access token.
-  if (error instanceof GitbeakerRequestError) {
-    const req = error.cause?.request
-    const res = error.cause?.response
-    const details = req
-      ? ` (${req.method} ${req.url})${res ? `: ${res.status}` : ''}`
-      : ''
-    return new Error(error.message + details)
-  }
-  return error
 }
