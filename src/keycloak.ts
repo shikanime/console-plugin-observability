@@ -3,8 +3,11 @@ import type KeycloakAdminClient from '@keycloak/keycloak-admin-client'
 import type GroupRepresentation from '@keycloak/keycloak-admin-client/lib/defs/groupRepresentation.js'
 import type UserRepresentation from '@keycloak/keycloak-admin-client/lib/defs/userRepresentation.js'
 import type { ListPerms } from './function.js'
+import { logger as baseLogger } from '@cpn-console/logger'
 import KcAdminClient from '@keycloak/keycloak-admin-client'
 import { getConfig } from './utils.js'
+
+const logger = baseLogger.child({ scope: 'plugin:observability:keycloak' })
 
 export async function getkcClient() {
   const kcClient = new KcAdminClient({
@@ -34,46 +37,79 @@ export async function ensureKeycloakGroups(listPerms: ListPerms, keycloakApi: Ke
   const rootGroupPath = await keycloakApi.getProjectGroupPath()
   if (!rootGroup) throw new Error(`Unable to find root keycloak group ${rootGroupPath}`)
 
+  logger.debug({
+    action: 'ensureKeycloakGroups',
+    rootGroupPath,
+    desired: {
+      hprod: { edit: listPerms['hors-prod'].edit.length, view: listPerms['hors-prod'].view.length },
+      prod: { edit: listPerms.prod.edit.length, view: listPerms.prod.view.length },
+    },
+  }, 'Starting Keycloak group sync')
+
   const subgroupsMetrics = await findOrCreateMetricGroupAndSubGroups(rootGroup.id)
   const promises: Promise<any>[] = []
+  let additions = 0
+  let removals = 0
 
   // à ajouter
   listPerms['hors-prod'].edit.forEach((userId) => {
     if (subgroupsMetrics['hprod-RW'].members.find(member => member.id === userId)) return
+    additions += 1
     promises.push(kcClient.users.addToGroup({ groupId: subgroupsMetrics['hprod-RW'].id, id: userId }))
   })
   listPerms['hors-prod'].view.forEach((userId) => {
     if (subgroupsMetrics['hprod-RO'].members.find(member => member.id === userId)) return
+    additions += 1
     promises.push(kcClient.users.addToGroup({ groupId: subgroupsMetrics['hprod-RO'].id, id: userId }))
   })
   listPerms.prod.edit.forEach((userId) => {
     if (subgroupsMetrics['prod-RW'].members.find(member => member.id === userId)) return
+    additions += 1
     promises.push(kcClient.users.addToGroup({ groupId: subgroupsMetrics['prod-RW'].id, id: userId }))
   })
   listPerms.prod.view.forEach((userId) => {
     if (subgroupsMetrics['prod-RO'].members.find(member => member.id === userId)) return
+    additions += 1
     promises.push(kcClient.users.addToGroup({ groupId: subgroupsMetrics['prod-RO'].id, id: userId }))
   })
 
   // à retirer
   subgroupsMetrics['hprod-RW'].members.forEach((member) => {
     if (listPerms['hors-prod'].edit.includes(member.id)) return
+    removals += 1
     promises.push(kcClient.users.delFromGroup({ id: member.id, groupId: subgroupsMetrics['hprod-RW'].id }))
   })
   subgroupsMetrics['hprod-RO'].members.forEach((member) => {
     if (listPerms['hors-prod'].view.includes(member.id)) return
+    removals += 1
     promises.push(kcClient.users.delFromGroup({ id: member.id, groupId: subgroupsMetrics['hprod-RO'].id }))
   })
   subgroupsMetrics['prod-RW'].members.forEach((member) => {
     if (listPerms.prod.edit.includes(member.id)) return
+    removals += 1
     promises.push(kcClient.users.delFromGroup({ id: member.id, groupId: subgroupsMetrics['prod-RW'].id }))
   })
   subgroupsMetrics['prod-RO'].members.forEach((member) => {
     if (listPerms.prod.view.includes(member.id)) return
+    removals += 1
     promises.push(kcClient.users.delFromGroup({ id: member.id, groupId: subgroupsMetrics['prod-RO'].id }))
   })
 
-  return Promise.all(promises)
+  logger.info({
+    action: 'ensureKeycloakGroups',
+    rootGroupPath,
+    groups: {
+      hprodRw: subgroupsMetrics['hprod-RW'].path,
+      hprodRo: subgroupsMetrics['hprod-RO'].path,
+      prodRw: subgroupsMetrics['prod-RW'].path,
+      prodRo: subgroupsMetrics['prod-RO'].path,
+    },
+    changes: { additions, removals, total: additions + removals },
+  }, 'Syncing Keycloak group membership')
+
+  const results = await Promise.all(promises)
+  logger.info({ action: 'ensureKeycloakGroups', rootGroupPath, changes: { additions, removals, total: additions + removals } }, 'Keycloak group sync done')
+  return results
 }
 
 type GroupDetails = Required<GroupRepresentation> & { members: Required<UserRepresentation>[] }
@@ -140,7 +176,15 @@ async function findDetails(group: Required<GroupRepresentation>, kcClient: Keycl
 export async function deleteKeycloakGroup(keycloakApi: KeycloakProjectApi) {
   const kcClient = await getkcClient()
   const projectRootGroup = await getRootGroupProject(keycloakApi)
-  if (!projectRootGroup) return
+  if (!projectRootGroup) {
+    logger.info({ action: 'deleteKeycloakGroup' }, 'No project root group, nothing to delete')
+    return
+  }
   const testMetricsGroup = await findMetricsGroup(kcClient, projectRootGroup?.id)
-  if (testMetricsGroup) return kcClient.groups.del({ id: testMetricsGroup.id })
+  if (!testMetricsGroup) {
+    logger.info({ action: 'deleteKeycloakGroup', projectGroupPath: projectRootGroup.path }, 'No grafana group, nothing to delete')
+    return
+  }
+  logger.info({ action: 'deleteKeycloakGroup', projectGroupPath: projectRootGroup.path, groupId: testMetricsGroup.id }, 'Deleting grafana group')
+  return kcClient.groups.del({ id: testMetricsGroup.id })
 }
