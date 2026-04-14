@@ -3,6 +3,10 @@
   "type": "module",
   "version": "1.2.1",
   "description": "Observability plugin for DSO console",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cloud-pi-native/console-plugin-observability"
+  },
   "exports": {
     ".": {
       "import": "./dist/index.js",
@@ -16,10 +20,6 @@
     "dist",
     "types"
   ],
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/cloud-pi-native/console-plugin-observability"
-  },
   "scripts": {
     "dev": "nodemon --watch src --ext .ts --exec 'npm run build'",
     "build": "tsc",
@@ -31,6 +31,7 @@
   },
   "dependencies": {
     "@cpn-console/hooks": "^4.1.0",
+    "@cpn-console/logger": "^1.0.1",
     "@gitbeaker/core": "^43.8.0",
     "@gitbeaker/requester-utils": "^43.8.0",
     "@gitbeaker/rest": "^43.8.0",
