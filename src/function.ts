@@ -10,6 +10,8 @@ import { retry, sanitizeCause } from './utils.js'
 
 const logger = baseLogger.child({ plugin: 'observability' })
 
+const logger = baseLogger.child({ plugin: 'observability' })
+
 const okSkipped: PluginResult = {
   status: {
     result: 'OK',
